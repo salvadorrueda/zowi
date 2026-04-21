@@ -1,0 +1,240 @@
+# Zowi ESP32 Bridge — Control del robot Zowi por interfaz web
+
+## ¿Qué hace este proyecto?
+
+El ESP32 actúa como **puente WiFi ↔ Bluetooth** entre cualquier navegador web y el robot Zowi.
+El Arduino del Zowi conserva su firmware original; el ESP32 solo traduce comandos.
+
+```
+[Móvil / Navegador]
+        │  HTTP + WebSocket (WiFi)
+   [ESP32]
+        │  Bluetooth Classic SPP
+  [Zowi Arduino]
+```
+
+---
+
+## Arquitectura del sistema
+
+### ESP32 (este proyecto)
+- Se conecta a tu red WiFi como cliente (modo STA).
+- Se empareja con el módulo Bluetooth del Zowi como maestro BT.
+- Sirve una página web completa en la IP asignada por el router.
+- Mantiene un WebSocket `/ws` para comunicación en tiempo real.
+- Traduce mensajes JSON del navegador al protocolo de texto del Zowi (`&&CMD ARGS%%`).
+- Lee respuestas del Zowi (sensores) y las reenvía al navegador como JSON.
+
+### Zowi Arduino (firmware original, sin cambios)
+- Recibe comandos por Bluetooth en formato `&&CMD ARGS%%`.
+- Ejecuta movimientos, gestos, sonidos y controla la matriz LED.
+- Responde a solicitudes de sensores (distancia, ruido, batería).
+
+---
+
+## Protocolo de comunicación
+
+### Navegador → ESP32 (WebSocket JSON)
+
+```json
+{"cmd": "S"}                            // Stop
+{"cmd": "M", "args": [1, 1000, 15]}     // Movimiento [moveId, periodoMs, tamaño]
+{"cmd": "H", "args": [1]}               // Gesto (1–13)
+{"cmd": "K", "args": [8]}               // Sonido (1–19)
+{"cmd": "L", "args": [1234567890]}      // Patrón LED (valor de 30 bits)
+{"cmd": "T", "args": [1000, 500]}       // Buzzer [frecuencia Hz, duración ms]
+{"cmd": "D"}                            // Solicitar distancia ultrasónica
+{"cmd": "N"}                            // Solicitar nivel de ruido
+{"cmd": "B"}                            // Solicitar nivel de batería
+{"cmd": "DANCE", "args": [true]}        // Activar/desactivar modo baile autónomo
+```
+
+### ESP32 → Zowi (Bluetooth, protocolo original)
+
+```
+&&S%%                    Stop
+&&M 1 1000 15%%          Movimiento (id, periodo, tamaño)
+&&H 1%%                  Gesto
+&&K 8%%                  Sonido
+&&D%%                    Solicitar distancia
+&&N%%                    Solicitar ruido
+&&B%%                    Solicitar batería
+```
+
+### ESP32 → Navegador (WebSocket JSON)
+
+```json
+{"type": "status", "bt": true, "ip": "192.168.1.45", "dance": false}
+{"type": "sensor", "key": "dist",  "val": 42.5}
+{"type": "sensor", "key": "noise", "val": 320}
+{"type": "sensor", "key": "bat",   "val": 78.0}
+{"type": "name",   "val": "Zowi"}
+```
+
+---
+
+## Movimientos disponibles (moveId)
+
+| ID | Movimiento       | ID | Movimiento      |
+|----|------------------|----|-----------------|
+| 1  | Adelante         | 11 | Salto           |
+| 2  | Atrás            | 12 | Flap adelante   |
+| 3  | Giro izquierda   | 13 | Flap atrás      |
+| 4  | Giro derecha     | 14 | Punta de pie    |
+| 5  | Arriba-Abajo     | 15 | Inclinación fwd |
+| 6  | Moonwalk izq.    | 16 | Inclinación bwd |
+| 7  | Moonwalk der.    | 17 | Sacudir pierna R|
+| 8  | Swing            | 18 | Sacudir pierna L|
+| 9  | Crusaito izq.    | 19 | Jitter          |
+| 10 | Crusaito der.    | 20 | Giro ascendente |
+
+## Gestos disponibles (gestureId)
+
+| ID | Gesto           | ID | Gesto       |
+|----|-----------------|----|-------------|
+| 1  | Feliz           | 8  | Enfadado    |
+| 2  | Súper feliz     | 9  | Nervioso    |
+| 3  | Triste          | 10 | Magia       |
+| 4  | Durmiendo       | 11 | Saludo      |
+| 5  | Pedo            | 12 | Victoria    |
+| 6  | Confuso         | 13 | Fallo       |
+| 7  | Amor            |    |             |
+
+---
+
+## Estructura del proyecto
+
+```
+zowi_esp32/
+  platformio.ini      # Configuración de build (ESP32, librerías)
+  src/
+    config.h          # ← EDITAR: credenciales WiFi y MAC Bluetooth del Zowi
+    main.cpp          # Firmware: WiFi, WebSocket, puente BT, modo baile
+    web_ui.h          # Interfaz web completa embebida en PROGMEM
+```
+
+---
+
+## Requisitos de hardware
+
+- 1× ESP32 (cualquier variante con Bluetooth Classic: ESP32-WROOM, ESP32-DevKitC, etc.)
+  - **No sirve** el ESP32-S2 (no tiene Bluetooth), ni el ESP32-C3 (solo BLE)
+- Robot Zowi con su Arduino y módulo Bluetooth Classic (HC-05 o similar)
+- Cable USB para programar el ESP32
+- Red WiFi 2.4 GHz
+
+---
+
+## Configuración inicial
+
+### 1. Editar `src/config.h`
+
+```cpp
+// Red WiFi a la que se conecta el ESP32
+#define WIFI_SSID     "NombreDeTuRed"
+#define WIFI_PASSWORD "TuContraseña"
+
+// MAC Bluetooth del módulo del Zowi
+// Para encontrarla: usar una app como "Bluetooth Scanner" en el móvil
+// o mirar la etiqueta del módulo HC-05
+const uint8_t ZOWI_BT_MAC[6] = {0x98, 0xD3, 0x31, 0xB2, 0xDB, 0x76};
+
+// PIN del módulo HC-05 (normalmente "1234" o "0000")
+#define ZOWI_BT_PIN   "1234"
+```
+
+### 2. Compilar y flashear
+
+Requiere [PlatformIO](https://platformio.org/) (extensión VS Code o CLI):
+
+```bash
+cd zowi_esp32
+
+# Compilar
+pio run
+
+# Compilar y flashear (ESP32 conectado por USB)
+pio run --target upload
+
+# Ver log serie
+pio device monitor
+```
+
+### 3. Usar la interfaz
+
+1. El ESP32 imprime su IP en el monitor serie al arrancar:
+   ```
+   [WiFi] Connected. IP: 192.168.1.45
+   [BT] Connected!
+   [HTTP] Server started on port 80
+   ```
+2. Abre esa IP en el navegador del móvil o PC (misma red WiFi).
+3. La barra de estado muestra `BT: ● Conectado` cuando el enlace Bluetooth está activo.
+4. Controla el robot con los botones de la interfaz.
+
+---
+
+## Interfaz web — Secciones
+
+| Sección           | Descripción                                              |
+|-------------------|----------------------------------------------------------|
+| Barra de estado   | Estado BT, IP del ESP32, batería %, distancia, ruido     |
+| Movimiento (D-pad)| Adelante/Atrás/Izq/Der — mantener pulsado para continuar|
+| Velocidad         | Slider que controla el periodo de oscilación (500–2000ms)|
+| Movimientos extra | 12 movimientos adicionales (moonwalk, flap, salto, etc.) |
+| Modo baile        | Toggle: el ESP32 elige movimientos al azar automáticamente|
+| Gestos            | 13 gestos con expresión facial + movimiento + sonido     |
+| Sonidos           | 13 sonidos predefinidos                                  |
+
+---
+
+## Librerías utilizadas (PlatformIO)
+
+| Librería                | Versión   | Uso                              |
+|-------------------------|-----------|----------------------------------|
+| ESP Async WebServer     | ^3.3.23   | Servidor HTTP y WebSocket        |
+| AsyncTCP                | ^3.3.6    | TCP asíncrono (requerido por el anterior) |
+| bblanchon/ArduinoJson   | ^7.3.1    | Parseo/serialización JSON        |
+| BluetoothSerial         | (built-in)| Bluetooth Classic SPP (incluida en ESP32 Arduino framework) |
+
+---
+
+## Funcionamiento interno — FreeRTOS
+
+El firmware usa dos tareas FreeRTOS:
+
+- **Core 1** (Arduino default): WiFi, servidor HTTP, callbacks WebSocket, bucle principal (reconexión BT, modo baile).
+- **Core 0** (`btReadTask`): Lectura continua del stream Bluetooth y reenvío de datos de sensores al WebSocket.
+
+Esta separación evita que la lectura bloqueante del Bluetooth interfiera con la pila de red.
+
+---
+
+## Reconexión automática
+
+- **WiFi**: El código espera hasta 15 segundos al arrancar. Si falla, continúa sin WiFi (el BT puede seguir funcionando).
+- **Bluetooth**: Si se pierde la conexión, el bucle principal reintenta cada 5 segundos.
+- **WebSocket**: El navegador reintenta la conexión WebSocket cada 3 segundos automáticamente, mostrando un overlay mientras tanto.
+
+---
+
+## Preguntas frecuentes
+
+**¿Puedo usar el ESP32-S3?**
+Sí, el ESP32-S3 tiene Bluetooth Classic. Cambia `board = esp32s3box` (o el board correspondiente) en `platformio.ini`.
+
+**¿El Zowi sigue funcionando con la app original?**
+Sí, mientras el ESP32 no esté emparejado, el módulo BT del Zowi sigue disponible para la app Protocoder.
+
+**¿La distancia y el ruido se actualizan solos?**
+La interfaz web solicita los sensores cada 2 segundos automáticamente cuando el WebSocket está abierto.
+
+**¿Cómo encuentro la MAC Bluetooth del Zowi?**
+Opciones:
+1. Mirar la etiqueta impresa en el módulo HC-05.
+2. Usar la app "nRF Connect" o similar en Android.
+3. Escanear desde Linux: `hcitool scan`.
+4. En el firmware original del Zowi hay una respuesta al comando `&&E%%` con el nombre, pero la MAC debe obtenerse externamente.
+
+**¿Por qué modo STA y no AP (Access Point)?**
+Con modo STA el ESP32 está en la misma red local que el móvil, lo que permite acceder desde cualquier dispositivo de la red sin desconectarse de Internet. Si se prefiere modo AP (sin router), se puede cambiar `WiFi.mode(WIFI_STA)` a `WiFi.softAP(SSID, PASSWORD)` en `main.cpp`.
